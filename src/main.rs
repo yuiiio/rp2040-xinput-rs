@@ -14,20 +14,20 @@
 use panic_halt as _;
 
 // Alias for our HAL crate
-use rp2040_hal as hal;
 use fugit::RateExtU32;
 use hal::clocks::Clock;
+use rp2040_hal as hal;
 
 // A shorter alias for the Peripheral Access Crate, which provides low-level
 // register access
+use hal::gpio::PinState;
 use hal::pac;
 use hal::pac::interrupt;
-use hal::gpio::PinState;
 
 // Some traits we need
+use embedded_hal::adc::OneShot;
 use embedded_hal::digital::v2::InputPin;
 use embedded_hal::digital::v2::OutputPin;
-use embedded_hal::adc::OneShot;
 
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
@@ -39,9 +39,10 @@ use embedded_graphics::prelude::*;
 use st7789::{Orientation, ST7789};
 
 mod xinput;
-use xinput::{XINPUTClass, XinputControlReport, XINPUT_EP_MAX_PACKET_SIZE,
-USB_XINPUT_VID, USB_XINPUT_PID,
-USB_CLASS_VENDOR, USB_SUBCLASS_VENDOR, USB_PROTOCOL_VENDOR, USB_DEVICE_RELEASE};
+use xinput::{
+    XINPUTClass, XinputControlReport, USB_CLASS_VENDOR, USB_DEVICE_RELEASE, USB_PROTOCOL_VENDOR,
+    USB_SUBCLASS_VENDOR, USB_XINPUT_PID, USB_XINPUT_VID, XINPUT_EP_MAX_PACKET_SIZE,
+};
 
 /// The USB Device Driver (shared with the interrupt).
 static mut USB_DEVICE: Option<UsbDevice<hal::usb::UsbBus>> = None;
@@ -156,11 +157,11 @@ fn main() -> ! {
     // for st7789 display
     let rst = pins.gpio4.into_push_pull_output_in_state(PinState::Low); // reset pin
     let dc = pins.gpio5.into_push_pull_output_in_state(PinState::Low); // dc pin
-                                                             //
+                                                                       //
     let spi_mosi = pins.gpio3.into_function::<hal::gpio::FunctionSpi>();
     let spi_sclk = pins.gpio2.into_function::<hal::gpio::FunctionSpi>();
     let spi = hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (spi_mosi, spi_sclk));
-    
+
     // Exchange the uninitialised SPI driver for an initialised one
     let spi = spi.init(
         &mut pac.RESETS,
@@ -171,14 +172,16 @@ fn main() -> ! {
 
     // display interface abstraction from SPI and DC
     let di = SPIInterfaceNoCS::new(spi, dc);
-    
+
     // create driver
     let mut display = ST7789::new(di, rst, 240, 240);
 
     // initialize
     display.init(&mut delay).unwrap();
     // set default orientation
-    display.set_orientation(Orientation::LandscapeSwapped).unwrap();
+    display
+        .set_orientation(Orientation::LandscapeSwapped)
+        .unwrap();
 
     let raw_image_data = ImageRawLE::new(include_bytes!("../assets/ferris.raw"), 240);
     let ferris = Image::new(&raw_image_data, Point::new(80, 0));
@@ -195,14 +198,14 @@ fn main() -> ! {
     let mut adc_pin_1 = hal::adc::AdcPin::new(pins.gpio27.into_floating_input());
     let mut adc_pin_2 = hal::adc::AdcPin::new(pins.gpio28.into_floating_input());
     let mut adc_pin_3 = hal::adc::AdcPin::new(pins.gpio29.into_floating_input());
-    
+
     /*
     // NOTE:
-    // RP2040-datasheet.pdf say 
-    // If the FIFO is full when a conversion completes, the sticky error flag FCS.OVER is set. 
+    // RP2040-datasheet.pdf say
+    // If the FIFO is full when a conversion completes, the sticky error flag FCS.OVER is set.
     // The current FIFO contents are not changed by this event,
     // but any conversion that completes whilst the FIFO is full will be lost.
-    // 
+    //
     // Is there always a two read interval delay?
     // After a long interval the next value to read is,
     // the next value read after a long interval is the value before that interval?
@@ -271,7 +274,7 @@ fn main() -> ! {
         // let adc_result_2 = adc_fifo.read();
         // let adc_result_1 = adc_fifo.read();
         // let adc_result_0 = adc_fifo.read();
-        
+
         let adc_result_3: u16 = adc.read(&mut adc_pin_3).unwrap();
         let adc_result_2: u16 = adc.read(&mut adc_pin_2).unwrap();
         let adc_result_1: u16 = adc.read(&mut adc_pin_1).unwrap();
@@ -289,9 +292,13 @@ fn main() -> ! {
         let rx: i16 = (adc_2 ^ 0b1000000000000000) as i16;
         let ry: i16 = (adc_3 ^ 0b0111111111111111) as i16;
 
+        // calibrate
+        let lx: i16 = lx.saturating_add(1 << 13);
+        let rx: i16 = rx.saturating_add(1 << 11);
+
         // scale and clamp
         // * 1.5 ( 1 + 1/2 ) = 3/2
-        let lx: i16 = lx.saturating_add(lx >> 1); 
+        let lx: i16 = lx.saturating_add(lx >> 1);
         let ly: i16 = ly.saturating_add(ly >> 1);
         let rx: i16 = rx.saturating_add(rx >> 1);
         let ry: i16 = ry.saturating_add(ry >> 1);
@@ -332,7 +339,7 @@ fn main() -> ! {
             js_right_x: rx,
             js_right_y: ry,
         };
-        
+
         push_input(&xinput_report);
 
         unsafe {
@@ -341,7 +348,7 @@ fn main() -> ! {
             usb_dev.poll(&mut [usb_xinput]);
         }
     }
-    
+
     // Stop free-running mode (the returned `adc` can be reused for future captures)
     // let _adc = adc_fifo.stop();
 }
@@ -353,7 +360,9 @@ fn push_input(report: &XinputControlReport) -> () {
     cortex_m::interrupt::free(|_| unsafe {
         // Now interrupts are disabled, grab the global variable and, if
         // available, send it a XINPUT report
-        USB_XINPUT.as_mut().map(|xinput| xinput.write_control(report))
+        USB_XINPUT
+            .as_mut()
+            .map(|xinput| xinput.write_control(report))
     })
     .unwrap()
 }
