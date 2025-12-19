@@ -97,7 +97,7 @@ impl<B: UsbBus> XINPUTClass<'_, B> {
             report_if: alloc.interface(),
 
             report_ep_in: alloc.alloc(Some(EndpointAddress::from_parts(0x01, UsbDirection::In)),
-            EndpointType::Interrupt, XINPUT_EP_MAX_PACKET_SIZE, 4).expect("alloc_ep failed"), // (capacity, poll_interval)
+            EndpointType::Interrupt, XINPUT_EP_MAX_PACKET_SIZE, 1).expect("alloc_ep failed"), // (capacity, poll_interval)
 
             report_ep_out: alloc.alloc(Some(EndpointAddress::from_parts(0x01, UsbDirection::Out)),
             EndpointType::Interrupt, XINPUT_EP_MAX_PACKET_SIZE, 8).expect("alloc_ep failed"), // (capacity, poll_interval)
