@@ -106,7 +106,7 @@ impl<B: UsbBus> XINPUTClass<'_, B> {
         }
     }
 
-    pub fn write_control(&mut self, xinput_report: &XinputControlReport) {
+    pub fn write_control(&mut self, xinput_report: &XinputControlReport) -> Result<usize> {
         let packed = xinput_report.pack().unwrap();
         let data: [u8; 20] = 
             [
@@ -131,7 +131,7 @@ impl<B: UsbBus> XINPUTClass<'_, B> {
             0,
             0,
             ];
-        self.report_ep_in.write(&data).ok();
+        self.report_ep_in.write(&data)
     }
 }
 
