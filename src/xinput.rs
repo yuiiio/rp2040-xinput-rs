@@ -1,3 +1,5 @@
+// Ref https://github.com/hyx0329/em-usb-pad/blob/dev/src/xinput.rs
+
 #[allow(unused)]
 use usb_device::class_prelude::*;
 use usb_device::Result;
