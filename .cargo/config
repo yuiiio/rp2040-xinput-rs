@@ -35,7 +35,9 @@ rustflags = [
 
 # This runner will make a UF2 file and then copy it to a mounted RP2040 in USB
 # Bootloader mode:
-runner = "./deploy.sh"
+# runner = "./deploy.sh"
+
+runner = "picotool load --update --verify --execute -t elf"
 
 # This runner will find a supported SWD debug probe and flash your RP2040 over
 # SWD:
