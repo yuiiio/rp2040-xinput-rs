@@ -19,5 +19,3 @@ rp2040-boot2 = "0.3.0"
 rp2040-hal = { git = "https://github.com/rp-rs/rp-hal.git", features = ["critical-section-impl", "rt"] }
 
 usb-device= "0.3.2"
-
-packed_struct = { version = "0.10.1", default-features = false }

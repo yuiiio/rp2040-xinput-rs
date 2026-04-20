@@ -5,7 +5,6 @@ use usb_device::class_prelude::*;
 use usb_device::Result;
 use usb_device::UsbDirection;
 use usb_device::endpoint::EndpointAddress;
-use packed_struct::prelude::*;
 
 // just copied from a controller with Xinput support
 pub const USB_XINPUT_VID: u16 = 0x045e;
@@ -32,59 +31,6 @@ const XINPUT_DESC_IF0: &[u8] = &[
     0x00, 0x00, // ???
 ];
 
-/// Store the input states of the controller
-#[derive(PackedStruct, Default, Debug, PartialEq)]
-#[packed_struct(endian = "lsb", bit_numbering = "msb0")]
-pub struct XinputControlReport {
-    // byte zero
-    #[packed_field(bits = "0")]
-    pub thumb_click_right: bool,
-    #[packed_field(bits = "1")]
-    pub thumb_click_left: bool,
-    #[packed_field(bits = "2")]
-    pub button_view: bool,
-    #[packed_field(bits = "3")]
-    pub button_menu: bool,
-    #[packed_field(bits = "4")]
-    pub dpad_right: bool,
-    #[packed_field(bits = "5")]
-    pub dpad_left: bool,
-    #[packed_field(bits = "6")]
-    pub dpad_down: bool,
-    #[packed_field(bits = "7")]
-    pub dpad_up: bool,
-    // byte one
-    #[packed_field(bits = "8")]
-    pub button_y: bool,
-    #[packed_field(bits = "9")]
-    pub button_x: bool,
-    #[packed_field(bits = "10")]
-    pub button_b: bool,
-    #[packed_field(bits = "11")]
-    pub button_a: bool,
-    // #[packed_field(bits = "12")]
-    // pub reserved: bool,
-    #[packed_field(bits = "13")]
-    pub xbox_button: bool,
-    #[packed_field(bits = "14")]
-    pub shoulder_right: bool,
-    #[packed_field(bits = "15")]
-    pub shoulder_left: bool,
-    // others
-    #[packed_field(bytes = "2")]
-    pub trigger_left: u8,
-    #[packed_field(bytes = "3")]
-    pub trigger_right: u8,
-    #[packed_field(bytes = "4..=5")]
-    pub js_left_x: i16,
-    #[packed_field(bytes = "6..=7")]
-    pub js_left_y: i16,
-    #[packed_field(bytes = "8..=9")]
-    pub js_right_x: i16,
-    #[packed_field(bytes = "10..=11")]
-    pub js_right_y: i16,
-}
-
 pub struct XINPUTClass<'a, B: UsbBus> {
     report_if: InterfaceNumber,
     report_ep_in: EndpointIn<'a, B>,
@@ -106,32 +52,8 @@ impl<B: UsbBus> XINPUTClass<'_, B> {
         }
     }
 
-    pub fn write_control(&mut self, xinput_report: &XinputControlReport) -> Result<usize> {
-        let packed = xinput_report.pack().unwrap();
-        let data: [u8; 20] = 
-            [
-            0x00, // packet type id
-            0x14, // packet length (20)
-            packed[0],
-            packed[1],
-            packed[2],
-            packed[3],
-            packed[4],
-            packed[5],
-            packed[6],
-            packed[7],
-            packed[8],
-            packed[9],
-            packed[10],
-            packed[11],
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            ];
-        self.report_ep_in.write(&data)
+    pub fn write_raw(&mut self, data: &[u8; 20]) -> Result<usize> {
+        self.report_ep_in.write(data)
     }
 }
 

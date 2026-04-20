@@ -9,7 +9,7 @@ use panic_halt as _;
 // register access
 use rp2040_hal::{
     Sio,
-    pac, pac::interrupt,
+    pac,
     clocks, clocks::Clock,
     Watchdog,
     adc::Adc, adc::AdcPin, 
@@ -25,7 +25,7 @@ use usb_device::prelude::*;
 
 mod xinput;
 use xinput::{
-    XINPUTClass, XinputControlReport, USB_CLASS_VENDOR, USB_DEVICE_RELEASE, USB_PROTOCOL_VENDOR,
+    XINPUTClass, USB_CLASS_VENDOR, USB_DEVICE_RELEASE, USB_PROTOCOL_VENDOR,
     USB_SUBCLASS_VENDOR, USB_XINPUT_PID, USB_XINPUT_VID, XINPUT_EP_MAX_PACKET_SIZE,
 };
 
@@ -164,6 +164,19 @@ fn main() -> ! {
     let mut led_pin = pins.gpio25.into_push_pull_output();
     led_pin.set_high().unwrap();
 
+    // ヘッダ（0x00, 0x14）を含めた20バイトの送信専用バッファ
+    let mut XINPUT_REPORT_BUFFER: [u8; 20] = [
+        0x00, 0x14, // Header
+        0, 0,       // Buttons (u16 LSB)
+        0,          // LT
+        0,          // RT
+        0, 0,       // LX (i16 LSB)
+        0, 0,       // LY (i16 LSB)
+        0, 0,       // RX (i16 LSB)
+        0, 0,       // RY (i16 LSB)
+        0, 0, 0, 0, 0, 0, // Reserved
+    ];
+
     let mut last_success_time = timer.get_counter();
 
     const PERIOD: u64 = 1000; // 1ms = 1000us
@@ -219,39 +232,43 @@ fn main() -> ! {
                 rz = 255;
             }
 
-            let xinput_report = XinputControlReport {
+            let mut buttons: u16 = 0;
                 // byte zero
-                thumb_click_right: in_pin_r3.is_low().unwrap(),
-                thumb_click_left: in_pin_l3.is_low().unwrap(),
-                button_view: in_pin_overview.is_low().unwrap(),
-                button_menu: in_pin_menu.is_low().unwrap(),
-                dpad_right: in_pin_d_right.is_low().unwrap(),
-                dpad_left: in_pin_d_left.is_low().unwrap(),
-                dpad_down: in_pin_d_down.is_low().unwrap(),
-                dpad_up: in_pin_d_up.is_low().unwrap(),
+            if in_pin_r3.is_low().unwrap() { buttons |= 1 << 7; }
+            if in_pin_l3.is_low().unwrap() { buttons |= 1 << 6; }
+            if in_pin_overview.is_low().unwrap() { buttons |= 1 << 5; }
+            if in_pin_menu.is_low().unwrap() { buttons |= 1 << 4; }
+            if in_pin_d_right.is_low().unwrap() { buttons |= 1 << 3; }
+            if in_pin_d_left.is_low().unwrap() { buttons |= 1 << 2; }
+            if in_pin_d_down.is_low().unwrap() { buttons |= 1 << 1; }
+            if in_pin_d_up.is_low().unwrap() { buttons |= 1 << 0; }
                 // byte one
-                button_y: in_pin_y.is_low().unwrap(),
-                button_x: in_pin_x.is_low().unwrap(),
-                button_b: in_pin_b.is_low().unwrap(),
-                button_a: in_pin_a.is_low().unwrap(),
+            if in_pin_y.is_low().unwrap() { buttons |= 1 << 15; }
+            if in_pin_x.is_low().unwrap() { buttons |= 1 << 14; }
+            if in_pin_b.is_low().unwrap() { buttons |= 1 << 13; }
+            if in_pin_a.is_low().unwrap() { buttons |= 1 << 12; }
                 // #[packed_field(bits = "12")]
                 // pub reserved: bool,
-                xbox_button: false,
-                shoulder_right: in_pin_rt.is_low().unwrap(),
-                shoulder_left: in_pin_lt.is_low().unwrap(),
+                // xbox_button: false,
+            if in_pin_rt.is_low().unwrap() { buttons |= 1 << 9; }
+            if in_pin_lt.is_low().unwrap() { buttons |= 1 << 8; }
+            
+            let btn_bytes = buttons.to_le_bytes();
+            XINPUT_REPORT_BUFFER[2] = btn_bytes[0];
+            XINPUT_REPORT_BUFFER[3] = btn_bytes[1];
                 // others
-                trigger_left: lz,
-                trigger_right: rz,
-                js_left_x: lx,
-                js_left_y: ly,
-                js_right_x: rx,
-                js_right_y: ry,
-            };
+            XINPUT_REPORT_BUFFER[4] = lz;
+            XINPUT_REPORT_BUFFER[5] = rz;
+
+            XINPUT_REPORT_BUFFER[6..8].copy_from_slice(&lx.to_le_bytes());
+            XINPUT_REPORT_BUFFER[8..10].copy_from_slice(&ly.to_le_bytes());
+            XINPUT_REPORT_BUFFER[10..12].copy_from_slice(&rx.to_le_bytes());
+            XINPUT_REPORT_BUFFER[12..14].copy_from_slice(&ry.to_le_bytes());
 
             unsafe {
                 let usb_xinput = USB_XINPUT.as_mut().unwrap();
 
-                if let Ok(_) = usb_xinput.write_control(&xinput_report) {
+                if let Ok(_) = usb_xinput.write_raw(&XINPUT_REPORT_BUFFER) {
                     // 送信成功。次の周期へ
                     last_success_time = now;
                 } else {
