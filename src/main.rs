@@ -1,11 +1,3 @@
-//! # GPIO 'Blinky' Example
-//!
-//! This application demonstrates how to control a GPIO pin on the RP2040.
-//!
-//! It may need to be adapted to your particular board layout and/or pin assignment.
-//!
-//! See the `Cargo.toml` file for Copyright and license details.
-
 #![no_std]
 #![no_main]
 
@@ -13,30 +5,22 @@
 // be linked)
 use panic_halt as _;
 
-// Alias for our HAL crate
-use fugit::RateExtU32;
-use hal::clocks::Clock;
-use rp2040_hal as hal;
-
 // A shorter alias for the Peripheral Access Crate, which provides low-level
 // register access
-use hal::gpio::PinState;
-use hal::pac;
-use hal::pac::interrupt;
+use rp2040_hal::{
+    Sio,
+    pac, pac::interrupt,
+    clocks, clocks::Clock,
+    Watchdog,
+    adc::Adc, adc::AdcPin, 
+    gpio::Pins,
+    usb,
+};
 
-// Some traits we need
-use embedded_hal::adc::OneShot;
-use embedded_hal::digital::v2::InputPin;
-use embedded_hal::digital::v2::OutputPin;
+use embedded_hal::digital::{InputPin, OutputPin};
 
 use usb_device::bus::UsbBusAllocator;
 use usb_device::prelude::*;
-
-use display_interface_spi::SPIInterfaceNoCS;
-use embedded_graphics::image::*;
-use embedded_graphics::pixelcolor::Rgb565;
-use embedded_graphics::prelude::*;
-use st7789::{Orientation, ST7789};
 
 mod xinput;
 use xinput::{
@@ -45,13 +29,13 @@ use xinput::{
 };
 
 /// The USB Device Driver (shared with the interrupt).
-static mut USB_DEVICE: Option<UsbDevice<hal::usb::UsbBus>> = None;
+static mut USB_DEVICE: Option<UsbDevice<usb::UsbBus>> = None;
 
 /// The USB Bus Driver (shared with the interrupt).
-static mut USB_BUS: Option<UsbBusAllocator<hal::usb::UsbBus>> = None;
+static mut USB_BUS: Option<UsbBusAllocator<usb::UsbBus>> = None;
 
 /// The USB Human Interface Device Driver (shared with the interrupt).
-static mut USB_XINPUT: Option<XINPUTClass<hal::usb::UsbBus>> = None;
+static mut USB_XINPUT: Option<XINPUTClass<usb::UsbBus>> = None;
 
 /// The linker will place this boot block at the start of our program image. We
 /// need this to help the ROM bootloader get our code up and running.
@@ -78,10 +62,10 @@ fn main() -> ! {
     let mut pac = pac::Peripherals::take().unwrap();
 
     // Set up the watchdog driver - needed by the clock setup code
-    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
+    let mut watchdog = Watchdog::new(pac.WATCHDOG);
 
     // Configure the clocks
-    let clocks = hal::clocks::init_clocks_and_plls(
+    let clocks = clocks::init_clocks_and_plls(
         XTAL_FREQ_HZ,
         pac.XOSC,
         pac.CLOCKS,
@@ -94,7 +78,7 @@ fn main() -> ! {
     .unwrap();
 
     // Set up the USB driver
-    let usb_bus = UsbBusAllocator::new(hal::usb::UsbBus::new(
+    let usb_bus = UsbBusAllocator::new(usb::UsbBus::new(
         pac.USBCTRL_REGS,
         pac.USBCTRL_DPRAM,
         clocks.usb_clock,
@@ -119,10 +103,10 @@ fn main() -> ! {
 
     //https://pid.codes
     let usb_dev = UsbDeviceBuilder::new(bus_ref, UsbVidPid(USB_XINPUT_VID, USB_XINPUT_PID))
-        .manufacturer("atbjyk")
-        .product("Rusty Xinput gamepad")
-        .serial_number("TEST")
-        .max_packet_size_0(XINPUT_EP_MAX_PACKET_SIZE as u8) // should change 16, 32,, when over report size over 8 byte ?
+        .strings(&[StringDescriptors::new(LangID::EN)
+        .product("Rusty Xinput gamepad")]).expect("Failed to set strings")
+        // should change 16, 32,, when over report size over 8 byte ?
+        .max_packet_size_0(XINPUT_EP_MAX_PACKET_SIZE as u8).expect("Failed to set max packet size")
         .device_release(USB_DEVICE_RELEASE)
         .device_protocol(USB_PROTOCOL_VENDOR)
         .device_class(USB_CLASS_VENDOR)
@@ -144,60 +128,24 @@ fn main() -> ! {
     let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
 
     // The single-cycle I/O block controls our GPIO pins
-    let sio = hal::Sio::new(pac.SIO);
+    let sio = Sio::new(pac.SIO);
 
     // Set the pins to their default state
-    let pins = hal::gpio::Pins::new(
+    let pins = Pins::new(
         pac.IO_BANK0,
         pac.PADS_BANK0,
         sio.gpio_bank0,
         &mut pac.RESETS,
     );
 
-    // for st7789 display
-    let rst = pins.gpio4.into_push_pull_output_in_state(PinState::Low); // reset pin
-    let dc = pins.gpio5.into_push_pull_output_in_state(PinState::Low); // dc pin
-                                                                       //
-    let spi_mosi = pins.gpio3.into_function::<hal::gpio::FunctionSpi>();
-    let spi_sclk = pins.gpio2.into_function::<hal::gpio::FunctionSpi>();
-    let spi = hal::spi::Spi::<_, _, _, 8>::new(pac.SPI0, (spi_mosi, spi_sclk));
-
-    // Exchange the uninitialised SPI driver for an initialised one
-    let spi = spi.init(
-        &mut pac.RESETS,
-        clocks.peripheral_clock.freq(),
-        16.MHz(),
-        embedded_hal::spi::MODE_3,
-    );
-
-    // display interface abstraction from SPI and DC
-    let di = SPIInterfaceNoCS::new(spi, dc);
-
-    // create driver
-    let mut display = ST7789::new(di, rst, 240, 240);
-
-    // initialize
-    display.init(&mut delay).unwrap();
-    // set default orientation
-    display
-        .set_orientation(Orientation::LandscapeSwapped)
-        .unwrap();
-
-    let raw_image_data = ImageRawLE::new(include_bytes!("../assets/ferris.raw"), 240);
-    let ferris = Image::new(&raw_image_data, Point::new(80, 0));
-
-    // draw image on black background
-    display.clear(Rgb565::BLACK).unwrap();
-    ferris.draw(&mut display).unwrap();
-
     // Enable ADC
-    let mut adc = hal::Adc::new(pac.ADC, &mut pac.RESETS);
+    let mut adc = Adc::new(pac.ADC, &mut pac.RESETS);
 
     // Configure GPIO{26, 27, 28, 29} as an ADC input
-    let mut adc_pin_0 = hal::adc::AdcPin::new(pins.gpio26.into_floating_input());
-    let mut adc_pin_1 = hal::adc::AdcPin::new(pins.gpio27.into_floating_input());
-    let mut adc_pin_2 = hal::adc::AdcPin::new(pins.gpio28.into_floating_input());
-    let mut adc_pin_3 = hal::adc::AdcPin::new(pins.gpio29.into_floating_input());
+    let mut adc_pin_0 = AdcPin::new(pins.gpio26.into_floating_input()).unwrap();
+    let mut adc_pin_1 = AdcPin::new(pins.gpio27.into_floating_input()).unwrap();
+    let mut adc_pin_2 = AdcPin::new(pins.gpio28.into_floating_input()).unwrap();
+    let mut adc_pin_3 = AdcPin::new(pins.gpio29.into_floating_input()).unwrap();
 
     /*
     // NOTE:
@@ -228,22 +176,22 @@ fn main() -> ! {
     */
 
     // Configure GPIO as an input
-    let in_pin_r3 = pins.gpio24.into_pull_up_input();
-    let in_pin_l3 = pins.gpio23.into_pull_up_input();
-    let in_pin_menu = pins.gpio7.into_pull_up_input();
-    let in_pin_overview = pins.gpio6.into_pull_up_input();
-    let in_pin_d_down = pins.gpio18.into_pull_up_input();
-    let in_pin_d_left = pins.gpio20.into_pull_up_input();
-    let in_pin_d_right = pins.gpio19.into_pull_up_input();
-    let in_pin_d_up = pins.gpio21.into_pull_up_input();
-    let in_pin_lt = pins.gpio16.into_pull_up_input();
-    let in_pin_lz = pins.gpio22.into_pull_up_input();
-    let in_pin_rz = pins.gpio9.into_pull_up_input();
-    let in_pin_rt = pins.gpio17.into_pull_up_input();
-    let in_pin_y = pins.gpio15.into_pull_up_input();
-    let in_pin_x = pins.gpio14.into_pull_up_input();
-    let in_pin_b = pins.gpio13.into_pull_up_input();
-    let in_pin_a = pins.gpio12.into_pull_up_input();
+    let mut in_pin_r3 = pins.gpio24.into_pull_up_input();
+    let mut in_pin_l3 = pins.gpio23.into_pull_up_input();
+    let mut in_pin_menu = pins.gpio7.into_pull_up_input();
+    let mut in_pin_overview = pins.gpio6.into_pull_up_input();
+    let mut in_pin_d_down = pins.gpio18.into_pull_up_input();
+    let mut in_pin_d_left = pins.gpio20.into_pull_up_input();
+    let mut in_pin_d_right = pins.gpio19.into_pull_up_input();
+    let mut in_pin_d_up = pins.gpio21.into_pull_up_input();
+    let mut in_pin_lt = pins.gpio16.into_pull_up_input();
+    let mut in_pin_lz = pins.gpio22.into_pull_up_input();
+    let mut in_pin_rz = pins.gpio9.into_pull_up_input();
+    let mut in_pin_rt = pins.gpio17.into_pull_up_input();
+    let mut in_pin_y = pins.gpio15.into_pull_up_input();
+    let mut in_pin_x = pins.gpio14.into_pull_up_input();
+    let mut in_pin_b = pins.gpio13.into_pull_up_input();
+    let mut in_pin_a = pins.gpio12.into_pull_up_input();
 
     // Configure GPIO25 as an output
     let mut led_pin = pins.gpio25.into_push_pull_output();
@@ -251,18 +199,6 @@ fn main() -> ! {
 
     // let mut toggle: bool = false;
     loop {
-        /* debug
-        if in_pin_overview.is_low().unwrap() && in_pin_menu.is_low().unwrap(){
-            display.clear(Rgb565::WHITE).unwrap();
-            toggle = true;
-        } else {
-            if toggle == true {
-                ferris.draw(&mut display).unwrap();
-                toggle = false;
-            }
-        }
-        */
-        //led_pin.set_low().unwrap();
 
         // busy-wait until the FIFO contains at least 4 samples:
         // while adc_fifo.len() < 4 {}
