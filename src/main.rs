@@ -183,7 +183,7 @@ fn main() -> ! {
         usb_regs.inte().modify(|_, w| w.dev_sof().set_bit());
     }
     const PERIOD: u64 = 1000; // 1ms = 1000us
-    const LEAD_TIME: u64 = 100; // 締め切りの100us前にサンプリング開始
+    const LEAD_TIME: u64 = 30; // 締め切りの30us前にサンプリング開始
                                 // adc.read()4回は10~20us ?
     let mut next_deadline = timer.get_counter().ticks();
 
@@ -300,6 +300,7 @@ fn main() -> ! {
         let process_time = end_proc.wrapping_sub(start_proc);
 
         if process_time > LEAD_TIME {
+            delay.delay_ms(100);
             led_pin.set_high().ok();
         } else {
             led_pin.set_low().ok();
