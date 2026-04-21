@@ -178,6 +178,10 @@ fn main() -> ! {
     ];
 
     let usb_regs = unsafe { &*pac::USBCTRL_REGS::ptr() };
+    // DEV_SOF 割り込みを有効化する
+    unsafe {
+        usb_regs.inte().modify(|_, w| w.dev_sof().set_bit());
+    }
     const PERIOD: u64 = 1000; // 1ms = 1000us
     const LEAD_TIME: u64 = 100; // 締め切りの100us前にサンプリング開始
                                 // adc.read()4回は10~20us ?
@@ -289,6 +293,8 @@ fn main() -> ! {
                 // ホストがまだ前回のデータを取っていない
                 // 周期が早すぎるか、ホスト側が忙しいので、次のpollを待つ
             }
+            //let usb_dev = USB_DEVICE.as_mut().unwrap();
+            //usb_dev.poll(&mut [usb_xinput]);
         }
         let end_proc = timer.get_counter().ticks();
         let process_time = end_proc.wrapping_sub(start_proc);
