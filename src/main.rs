@@ -183,15 +183,8 @@ fn main() -> ! {
         usb_regs.inte().modify(|_, w| w.dev_sof().set_bit());
     }
 
+    // let mut last_sof_time: u64 = 0;
     loop {
-        /*
-        unsafe {
-            let usb_dev = USB_DEVICE.as_mut().unwrap();
-            let usb_xinput = USB_XINPUT.as_mut().unwrap();
-
-            usb_dev.poll(&mut [usb_xinput]);
-        }
-        */
         // 1. SOFが来るまで poll しながら待機
         // これが「1ms周期のスタート地点」を待つ行為になる
         while !usb_regs.ints().read().dev_sof().bit_is_set() {
@@ -211,7 +204,20 @@ fn main() -> ! {
 
         // --- 3. 入力処理と時間計測 ---
         // SOFから数μs〜数十μs以内に完了させれば、この回のポーリングに間に合う?
+        /*
         let start_proc = timer.get_counter().ticks();
+        if last_sof_time != 0 {
+            let interval = start_proc.wrapping_sub(last_sof_time);
+            if interval < 990 || interval > 1010 {
+                // detect jitter
+                led_pin.set_high().ok();
+            } else {
+                led_pin.set_low().ok();
+            }
+        }
+
+        last_sof_time = start_proc;
+        */
 
         let adc_result_3: u16 = adc.read(&mut adc_pin_3).unwrap();
         let adc_result_2: u16 = adc.read(&mut adc_pin_2).unwrap();
@@ -282,14 +288,6 @@ fn main() -> ! {
         XINPUT_REPORT_BUFFER[10..12].copy_from_slice(&rx.to_le_bytes());
         XINPUT_REPORT_BUFFER[12..14].copy_from_slice(&ry.to_le_bytes());
 
-        // 1. 送信前：あらかじめ BUFF_STATUS をクリアしておく
-        // (EP1 IN を想定。エンドポイント番号に合わせてビット位置を調整してください)
-        /*
-        const EP1_IN_BIT: u32 = 1 << 2; 
-        unsafe {
-            usb_regs.buff_status().write(|w| w.bits(EP1_IN_BIT));
-        }
-        */
         unsafe {
             let usb_xinput = USB_XINPUT.as_mut().unwrap();
 
@@ -305,17 +303,6 @@ fn main() -> ! {
         /*
         let end_proc = timer.get_counter().ticks();
 
-        // 送信完了(ACK受信)を待つ (タイムアウト付き)
-        while !((usb_regs.buff_status().read().bits() & EP1_IN_BIT) != 0) {
-            if timer.get_counter().ticks() - end_proc > 500 {
-                led_pin.set_high().ok();
-                delay.delay_ms(100);
-                break; 
-            } // 0.5ms以上待っても来ないなら失敗
-        }
-        led_pin.set_low().ok();
-        */
-        /*
         if process_time > LEAD_TIME { // should LEAD_TIME <= 30 us
             led_pin.set_high().ok();
             delay.delay_ms(100);
