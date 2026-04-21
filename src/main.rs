@@ -162,7 +162,7 @@ fn main() -> ! {
 
     // Configure GPIO25 as an output
     let mut led_pin = pins.gpio25.into_push_pull_output();
-    led_pin.set_high().unwrap();
+    led_pin.set_low().unwrap();
 
     // ヘッダ（0x00, 0x14）を含めた20バイトの送信専用バッファ
     let mut XINPUT_REPORT_BUFFER: [u8; 20] = [
@@ -274,6 +274,14 @@ fn main() -> ! {
                 } else {
                     // ホストがまだ前回のデータを取っていない
                     // 周期が早すぎるか、ホスト側が忙しいので、次のpollを待つ
+                }
+                let end_time = timer.get_counter();
+                let total_micros = (end_time - now).to_micros();
+
+                if total_micros > 100 {
+                    led_pin.set_high().ok();
+                } else {
+                    led_pin.set_low().ok();
                 }
             }
         }
