@@ -177,113 +177,126 @@ fn main() -> ! {
         0, 0, 0, 0, 0, 0, // Reserved
     ];
 
-    let mut last_success_time = timer.get_counter();
-
+    let usb_regs = unsafe { &*pac::USBCTRL_REGS::ptr() };
     const PERIOD: u64 = 1000; // 1ms = 1000us
     const LEAD_TIME: u64 = 100; // 締め切りの100us前にサンプリング開始
                                 // adc.read()4回は10~20us ?
+    let mut next_deadline = timer.get_counter().ticks();
 
     loop {
-        unsafe {
-            let usb_dev = USB_DEVICE.as_mut().unwrap();
-            let usb_xinput = USB_XINPUT.as_mut().unwrap();
+        // --- 1. USB SOF による時刻同期 (アンカー) ---
+        // INTSレジスタのDEV_SOFビットをチェック
+        if usb_regs.ints().read().dev_sof().bit_is_set() {
+            // SOF_RDを読むことでDEV_SOFビットが自動クリアされる
+            // rp2040-pac/src/usbctrl_regs/ints.rs
+            //#[doc = "Field `DEV_SOF` reader - Set every time the device receives a SOF (Start of Frame) packet. Cleared by reading SOF_RD"]
+            let _frame_num = usb_regs.sof_rd().read().bits(); 
 
-            usb_dev.poll(&mut [usb_xinput]);
+            // ホストの1ms開始時刻に合わせて、RP2040側の目標時刻を修正
+            // これでRP2040のタイマーが速くても遅くても、毎ミリ秒リセットされる
+            next_deadline = timer.get_counter().ticks().wrapping_add(PERIOD);
         }
 
-        let now = timer.get_counter();
-        let elapsed = (now - last_success_time).to_micros();
-
-        if elapsed >= (PERIOD - LEAD_TIME) {
-
-            let adc_result_3: u16 = adc.read(&mut adc_pin_3).unwrap();
-            let adc_result_2: u16 = adc.read(&mut adc_pin_2).unwrap();
-            let adc_result_1: u16 = adc.read(&mut adc_pin_1).unwrap();
-            let adc_result_0: u16 = adc.read(&mut adc_pin_0).unwrap();
-
-            // u12 bit to i16 bit
-            // norm is 0
-            let adc_0: u16 = adc_result_0 << 4;
-            let adc_1: u16 = adc_result_1 << 4;
-            let adc_2: u16 = adc_result_2 << 4;
-            let adc_3: u16 = adc_result_3 << 4;
-
-            let lx: i16 = (adc_0 ^ 0b1000000000000000) as i16;
-            let ly: i16 = (adc_1 ^ 0b0111111111111111) as i16;
-            let rx: i16 = (adc_2 ^ 0b1000000000000000) as i16;
-            let ry: i16 = (adc_3 ^ 0b0111111111111111) as i16;
-
-            // calibrate
-            let lx: i16 = lx.saturating_add(1 << 13);
-            let rx: i16 = rx.saturating_add(1 << 11);
-
-            // scale and clamp
-            // * 1.5 ( 1 + 1/2 ) = 3/2
-            let lx: i16 = lx.saturating_add(lx >> 1);
-            let ly: i16 = ly.saturating_add(ly >> 1);
-            let rx: i16 = rx.saturating_add(rx >> 1);
-            let ry: i16 = ry.saturating_add(ry >> 1);
-
-            let (mut lz, mut rz): (u8, u8) = (0, 0);
-            if in_pin_lz.is_low().unwrap() {
-                lz = 255;
-            }
-            if in_pin_rz.is_low().unwrap() {
-                rz = 255;
-            }
-
-            let mut buttons: u16 = 0;
-                // byte zero
-            if in_pin_r3.is_low().unwrap() { buttons |= 1 << 7; }
-            if in_pin_l3.is_low().unwrap() { buttons |= 1 << 6; }
-            if in_pin_overview.is_low().unwrap() { buttons |= 1 << 5; }
-            if in_pin_menu.is_low().unwrap() { buttons |= 1 << 4; }
-            if in_pin_d_right.is_low().unwrap() { buttons |= 1 << 3; }
-            if in_pin_d_left.is_low().unwrap() { buttons |= 1 << 2; }
-            if in_pin_d_down.is_low().unwrap() { buttons |= 1 << 1; }
-            if in_pin_d_up.is_low().unwrap() { buttons |= 1 << 0; }
-                // byte one
-            if in_pin_y.is_low().unwrap() { buttons |= 1 << 15; }
-            if in_pin_x.is_low().unwrap() { buttons |= 1 << 14; }
-            if in_pin_b.is_low().unwrap() { buttons |= 1 << 13; }
-            if in_pin_a.is_low().unwrap() { buttons |= 1 << 12; }
-                // #[packed_field(bits = "12")]
-                // pub reserved: bool,
-                // xbox_button: false,
-            if in_pin_rt.is_low().unwrap() { buttons |= 1 << 9; }
-            if in_pin_lt.is_low().unwrap() { buttons |= 1 << 8; }
-            
-            let btn_bytes = buttons.to_le_bytes();
-            XINPUT_REPORT_BUFFER[2] = btn_bytes[0];
-            XINPUT_REPORT_BUFFER[3] = btn_bytes[1];
-                // others
-            XINPUT_REPORT_BUFFER[4] = lz;
-            XINPUT_REPORT_BUFFER[5] = rz;
-
-            XINPUT_REPORT_BUFFER[6..8].copy_from_slice(&lx.to_le_bytes());
-            XINPUT_REPORT_BUFFER[8..10].copy_from_slice(&ly.to_le_bytes());
-            XINPUT_REPORT_BUFFER[10..12].copy_from_slice(&rx.to_le_bytes());
-            XINPUT_REPORT_BUFFER[12..14].copy_from_slice(&ry.to_le_bytes());
-
+        // --- 2. 絶対時刻基準の待機 ---
+        // 締め切りの少し前まで poll しながら待つ
+        while timer.get_counter().ticks() < (next_deadline - LEAD_TIME) {
             unsafe {
+                let usb_dev = USB_DEVICE.as_mut().unwrap();
                 let usb_xinput = USB_XINPUT.as_mut().unwrap();
 
-                if let Ok(_) = usb_xinput.write_raw(&XINPUT_REPORT_BUFFER) {
-                    // 送信成功。次の周期へ
-                    last_success_time = now;
-                } else {
-                    // ホストがまだ前回のデータを取っていない
-                    // 周期が早すぎるか、ホスト側が忙しいので、次のpollを待つ
-                }
-                let end_time = timer.get_counter();
-                let total_micros = (end_time - now).to_micros();
-
-                if total_micros > 100 {
-                    led_pin.set_high().ok();
-                } else {
-                    led_pin.set_low().ok();
-                }
+                usb_dev.poll(&mut [usb_xinput]);
             }
+        }
+
+        // --- 3. 入力処理と時間計測 ---
+        let start_proc = timer.get_counter().ticks();
+
+        let adc_result_3: u16 = adc.read(&mut adc_pin_3).unwrap();
+        let adc_result_2: u16 = adc.read(&mut adc_pin_2).unwrap();
+        let adc_result_1: u16 = adc.read(&mut adc_pin_1).unwrap();
+        let adc_result_0: u16 = adc.read(&mut adc_pin_0).unwrap();
+
+        // u12 bit to i16 bit
+        // norm is 0
+        let adc_0: u16 = adc_result_0 << 4;
+        let adc_1: u16 = adc_result_1 << 4;
+        let adc_2: u16 = adc_result_2 << 4;
+        let adc_3: u16 = adc_result_3 << 4;
+
+        let lx: i16 = (adc_0 ^ 0b1000000000000000) as i16;
+        let ly: i16 = (adc_1 ^ 0b0111111111111111) as i16;
+        let rx: i16 = (adc_2 ^ 0b1000000000000000) as i16;
+        let ry: i16 = (adc_3 ^ 0b0111111111111111) as i16;
+
+        // calibrate
+        let lx: i16 = lx.saturating_add(1 << 13);
+        let rx: i16 = rx.saturating_add(1 << 11);
+
+        // scale and clamp
+        // * 1.5 ( 1 + 1/2 ) = 3/2
+        let lx: i16 = lx.saturating_add(lx >> 1);
+        let ly: i16 = ly.saturating_add(ly >> 1);
+        let rx: i16 = rx.saturating_add(rx >> 1);
+        let ry: i16 = ry.saturating_add(ry >> 1);
+
+        let (mut lz, mut rz): (u8, u8) = (0, 0);
+        if in_pin_lz.is_low().unwrap() {
+            lz = 255;
+        }
+        if in_pin_rz.is_low().unwrap() {
+            rz = 255;
+        }
+
+        let mut buttons: u16 = 0;
+        // byte zero
+        if in_pin_r3.is_low().unwrap() { buttons |= 1 << 7; }
+        if in_pin_l3.is_low().unwrap() { buttons |= 1 << 6; }
+        if in_pin_overview.is_low().unwrap() { buttons |= 1 << 5; }
+        if in_pin_menu.is_low().unwrap() { buttons |= 1 << 4; }
+        if in_pin_d_right.is_low().unwrap() { buttons |= 1 << 3; }
+        if in_pin_d_left.is_low().unwrap() { buttons |= 1 << 2; }
+        if in_pin_d_down.is_low().unwrap() { buttons |= 1 << 1; }
+        if in_pin_d_up.is_low().unwrap() { buttons |= 1 << 0; }
+        // byte one
+        if in_pin_y.is_low().unwrap() { buttons |= 1 << 15; }
+        if in_pin_x.is_low().unwrap() { buttons |= 1 << 14; }
+        if in_pin_b.is_low().unwrap() { buttons |= 1 << 13; }
+        if in_pin_a.is_low().unwrap() { buttons |= 1 << 12; }
+        // #[packed_field(bits = "12")]
+        // pub reserved: bool,
+        // xbox_button: false,
+        if in_pin_rt.is_low().unwrap() { buttons |= 1 << 9; }
+        if in_pin_lt.is_low().unwrap() { buttons |= 1 << 8; }
+
+        let btn_bytes = buttons.to_le_bytes();
+        XINPUT_REPORT_BUFFER[2] = btn_bytes[0];
+        XINPUT_REPORT_BUFFER[3] = btn_bytes[1];
+        // others
+        XINPUT_REPORT_BUFFER[4] = lz;
+        XINPUT_REPORT_BUFFER[5] = rz;
+
+        XINPUT_REPORT_BUFFER[6..8].copy_from_slice(&lx.to_le_bytes());
+        XINPUT_REPORT_BUFFER[8..10].copy_from_slice(&ly.to_le_bytes());
+        XINPUT_REPORT_BUFFER[10..12].copy_from_slice(&rx.to_le_bytes());
+        XINPUT_REPORT_BUFFER[12..14].copy_from_slice(&ry.to_le_bytes());
+
+        unsafe {
+            let usb_xinput = USB_XINPUT.as_mut().unwrap();
+
+            if let Ok(_) = usb_xinput.write_raw(&XINPUT_REPORT_BUFFER) {
+                // 送信成功。次の周期へ
+            } else {
+                // ホストがまだ前回のデータを取っていない
+                // 周期が早すぎるか、ホスト側が忙しいので、次のpollを待つ
+            }
+        }
+        let end_proc = timer.get_counter().ticks();
+        let process_time = end_proc.wrapping_sub(start_proc);
+
+        if process_time > LEAD_TIME {
+            led_pin.set_high().ok();
+        } else {
+            led_pin.set_low().ok();
         }
         // do nothing
     }
