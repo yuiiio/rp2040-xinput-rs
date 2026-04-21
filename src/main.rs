@@ -182,28 +182,19 @@ fn main() -> ! {
     unsafe {
         usb_regs.inte().modify(|_, w| w.dev_sof().set_bit());
     }
-    const PERIOD: u64 = 1000; // 1ms = 1000us
-    const LEAD_TIME: u64 = 30; // 締め切りの30us前にサンプリング開始
-                                // adc.read()4回は10~20us ?
-    let mut next_deadline = timer.get_counter().ticks();
 
     loop {
-        // --- 1. USB SOF による時刻同期 (アンカー) ---
-        // INTSレジスタのDEV_SOFビットをチェック
-        if usb_regs.ints().read().dev_sof().bit_is_set() {
-            // SOF_RDを読むことでDEV_SOFビットが自動クリアされる
-            // rp2040-pac/src/usbctrl_regs/ints.rs
-            //#[doc = "Field `DEV_SOF` reader - Set every time the device receives a SOF (Start of Frame) packet. Cleared by reading SOF_RD"]
-            let _frame_num = usb_regs.sof_rd().read().bits(); 
+        /*
+        unsafe {
+            let usb_dev = USB_DEVICE.as_mut().unwrap();
+            let usb_xinput = USB_XINPUT.as_mut().unwrap();
 
-            // ホストの1ms開始時刻に合わせて、RP2040側の目標時刻を修正
-            // これでRP2040のタイマーが速くても遅くても、毎ミリ秒リセットされる
-            next_deadline = timer.get_counter().ticks().wrapping_add(PERIOD);
+            usb_dev.poll(&mut [usb_xinput]);
         }
-
-        // --- 2. 絶対時刻基準の待機 ---
-        // 締め切りの少し前まで poll しながら待つ
-        while timer.get_counter().ticks() < (next_deadline - LEAD_TIME) {
+        */
+        // 1. SOFが来るまで poll しながら待機
+        // これが「1ms周期のスタート地点」を待つ行為になる
+        while !usb_regs.ints().read().dev_sof().bit_is_set() {
             unsafe {
                 let usb_dev = USB_DEVICE.as_mut().unwrap();
                 let usb_xinput = USB_XINPUT.as_mut().unwrap();
@@ -212,7 +203,14 @@ fn main() -> ! {
             }
         }
 
+        // 2. SOFを検知した瞬間にフラグをクリア
+        // SOF_RDを読むことでDEV_SOFビットが自動クリアされる
+        // rp2040-pac/src/usbctrl_regs/ints.rs
+        //#[doc = "Field `DEV_SOF` reader - Set every time the device receives a SOF (Start of Frame) packet. Cleared by reading SOF_RD"]
+        let _frame_num = usb_regs.sof_rd().read().bits(); 
+
         // --- 3. 入力処理と時間計測 ---
+        // SOFから数μs〜数十μs以内に完了させれば、この回のポーリングに間に合う?
         let start_proc = timer.get_counter().ticks();
 
         let adc_result_3: u16 = adc.read(&mut adc_pin_3).unwrap();
@@ -284,6 +282,14 @@ fn main() -> ! {
         XINPUT_REPORT_BUFFER[10..12].copy_from_slice(&rx.to_le_bytes());
         XINPUT_REPORT_BUFFER[12..14].copy_from_slice(&ry.to_le_bytes());
 
+        // 1. 送信前：あらかじめ BUFF_STATUS をクリアしておく
+        // (EP1 IN を想定。エンドポイント番号に合わせてビット位置を調整してください)
+        /*
+        const EP1_IN_BIT: u32 = 1 << 2; 
+        unsafe {
+            usb_regs.buff_status().write(|w| w.bits(EP1_IN_BIT));
+        }
+        */
         unsafe {
             let usb_xinput = USB_XINPUT.as_mut().unwrap();
 
@@ -296,15 +302,27 @@ fn main() -> ! {
             //let usb_dev = USB_DEVICE.as_mut().unwrap();
             //usb_dev.poll(&mut [usb_xinput]);
         }
+        /*
         let end_proc = timer.get_counter().ticks();
-        let process_time = end_proc.wrapping_sub(start_proc);
 
-        if process_time > LEAD_TIME {
-            delay.delay_ms(100);
+        // 送信完了(ACK受信)を待つ (タイムアウト付き)
+        while !((usb_regs.buff_status().read().bits() & EP1_IN_BIT) != 0) {
+            if timer.get_counter().ticks() - end_proc > 500 {
+                led_pin.set_high().ok();
+                delay.delay_ms(100);
+                break; 
+            } // 0.5ms以上待っても来ないなら失敗
+        }
+        led_pin.set_low().ok();
+        */
+        /*
+        if process_time > LEAD_TIME { // should LEAD_TIME <= 30 us
             led_pin.set_high().ok();
+            delay.delay_ms(100);
         } else {
             led_pin.set_low().ok();
         }
+        */
         // do nothing
     }
 }
