@@ -288,20 +288,17 @@ fn main() -> ! {
         XINPUT_REPORT_BUFFER[10..12].copy_from_slice(&rx.to_le_bytes());
         XINPUT_REPORT_BUFFER[12..14].copy_from_slice(&ry.to_le_bytes());
 
-        loop {
-            unsafe {
-                let usb_xinput = USB_XINPUT.as_mut().unwrap();
-                let usb_dev = USB_DEVICE.as_mut().unwrap();
-                match usb_xinput.write_raw(&XINPUT_REPORT_BUFFER) {
-                    Ok(_) => {
-                        break;
-                    },
-                    Err(UsbError::WouldBlock) => {
-                        usb_dev.poll(&mut [usb_xinput]);
-                    },
-                    _ => {},
-                }
+        unsafe {
+            let usb_xinput = USB_XINPUT.as_mut().unwrap();
+
+            if let Ok(_) = usb_xinput.write_raw(&XINPUT_REPORT_BUFFER) {
+                // 送信成功。次の周期へ
+            } else {
+                // ホストがまだ前回のデータを取っていない
+                // 周期が早すぎるか、ホスト側が忙しいので、次のpollを待つ
             }
+            //let usb_dev = USB_DEVICE.as_mut().unwrap();
+            //usb_dev.poll(&mut [usb_xinput]);
         }
         /*
         let end_proc = timer.get_counter().ticks();
